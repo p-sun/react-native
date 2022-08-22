@@ -125,24 +125,49 @@ commands:
         default: *shallow_checkout_depth
         type: integer
     steps:
-      - run:
-          name: Add sshkey for Github
-          command: |
-            mkdir -p ~/.ssh
-            ssh-keyscan -H github.com >> ~/.ssh/known_hosts
-      - run:
-          name: Shallow clone repo
-          command: |
-            git clone --branch main --no-checkout "$CIRCLE_REPOSITORY_URL" --single-branch .
-            # Fetch from fork if applicable
-            if [ -n "$CIRCLE_PR_NUMBER" ] ; then
-              git fetch --force --depth 1 origin +refs/pull/$CIRCLE_PR_NUMBER/head:refs/remotes/origin/pull/$CIRCLE_PR_NUMBER
-            fi
-            if [ -n "$CIRCLE_BRANCH" ] ; then
-              git checkout --force -B "$CIRCLE_BRANCH" "$CIRCLE_SHA1"
-            else
-              git checkout main
-            fi
+      - checkout
+      # - run:
+      #     name: Add sshkey for Github
+      #     command: |
+      #       mkdir -p ~/.ssh
+      #       ssh-keyscan -H github.com >> ~/.ssh/known_hosts
+      # - run:
+      #     name: Shallow clone repo
+      #     command: |
+      #       git config --global url."ssh://git@github.com".insteadOf "https://github.com" || true
+
+      #       if [ -e /home/circleci/project/.git ]
+      #       then
+      #           cd /home/circleci/project
+      #           git remote set-url origin "$CIRCLE_REPOSITORY_URL" || true
+      #       else
+      #           mkdir -p /home/circleci/project
+      #           cd /home/circleci/project
+      #           git clone --depth=1 "$CIRCLE_REPOSITORY_URL" .
+      #       fi
+
+      #       if [ -n "$CIRCLE_TAG" ]
+      #       then
+      #         git fetch --depth=10 --force origin "refs/tags/${CIRCLE_TAG}"
+      #       elif [[ "$CIRCLE_BRANCH" =~ ^pull\/* ]]
+      #       then
+      #         # For PR from Fork
+      #           git fetch --depth=10 --force origin "$CIRCLE_BRANCH/head:remotes/origin/$CIRCLE_BRANCH"
+      #       else
+      #           git fetch --depth=10 --force origin "$CIRCLE_BRANCH:remotes/origin/$CIRCLE_BRANCH"
+      #       fi
+
+      #       if [ -n "$CIRCLE_TAG" ]
+      #       then
+      #           git reset --hard "$CIRCLE_SHA1"
+      #           git checkout -q "$CIRCLE_TAG"
+      #       elif [ -n "$CIRCLE_BRANCH" ]
+      #       then
+      #           git reset --hard "$CIRCLE_SHA1"
+      #           git checkout -q -B "$CIRCLE_BRANCH"
+      #       fi
+
+      #       git reset --hard "$CIRCLE_SHA1"
 
   # Checkout with cache, on machines that are using Docker the cache is ignored
   checkout_code_with_cache:
@@ -730,6 +755,13 @@ jobs:
   # -------------------------
   test_ios_template:
     executor: reactnativeios
+    parameters:
+      flavor:
+        type: string
+        default: "Debug"
+      newarchitecture:
+        type: boolean
+        default: false
     environment:
       - PROJECT_NAME: "iOSTemplateProject"
       - HERMES_WS_DIR: *hermes_workspace_root
@@ -754,11 +786,27 @@ jobs:
             PACKAGE=$(cat build/react-native-package-version)
             PATH_TO_PACKAGE="$REPO_ROOT/build/$PACKAGE"
             node ./scripts/set-rn-template-version.js "file:$PATH_TO_PACKAGE"
-            node cli.js init $PROJECT_NAME --directory "/tmp/$PROJECT_NAME" --template $REPO_ROOT --verbose
+            node cli.js init $PROJECT_NAME --directory "/tmp/$PROJECT_NAME" --template $REPO_ROOT --verbose --skip-install
+      - run:
+          name: Install iOS dependencies - Configuration << parameters.flavor >>; New Architecture << parameters.newarchitecture >>
+          command: |
+            cd /tmp/$PROJECT_NAME/ios
+
+            if [[ << parameters.flavor >> == "Release" ]]; then
+              echo "export PRODUCTION=1" >> $BASH_ENV
+            fi
+
+            if [[ << parameters.newarchitecture >> ]]; then
+              echo "export RCT_NEW_ARCH_ENABLED=1" >> $BASH_ENV
+            fi
+
+            bundle install
+            bundle exec pod install
       - run:
           name: Build template project
           command: |
             xcodebuild build \
+              -configuration << parameters.flavor >> \
               -workspace /tmp/$PROJECT_NAME/ios/$PROJECT_NAME.xcworkspace \
               -scheme $PROJECT_NAME \
               -sdk iphonesimulator
@@ -1360,6 +1408,10 @@ workflows:
       - test_ios_template:
           requires:
             - build_npm_package
+          matrix:
+            parameters:
+              newarchitecture: [true, false]
+              flavor: ["Debug", "Release"]
       - test_ios_rntester:
           requires:
             - build_hermes_macos
